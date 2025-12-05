@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Electrostatic Charge Simulator</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom styles for canvas and drawing */
+        #physicsCanvas {
+            border: 2px solid #374151;
+            background-color: #f9fafb;
+            cursor: crosshair;
+            touch-action: none; /* Prevents default touch actions */
+        }
+        .charge-pos {
+            color: #ef4444; /* Red for Positive */
+        }
+        .charge-neg {
+            color: #3b82f6; /* Blue for Negative */
+        }
+    </style>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-gray-100 font-sans p-4 min-h-screen flex flex-col items-center">
+
+    <h1 class="text-3xl font-bold mb-6 text-gray-800">Electrostatic Charge Simulator</h1>
+
+    <div class="w-full max-w-5xl bg-white shadow-xl rounded-xl p-4 md:p-6 flex flex-col lg:flex-row gap-6">
+
+        <!-- Controls Panel -->
+        <div class="lg:w-1/4 flex flex-col space-y-4">
+            <h2 class="text-xl font-semibold text-gray-700 border-b pb-2">Controls</h2>
+
+            <!-- Charge Magnitude Input -->
+            <div>
+                <label for="chargeMagnitude" class="block text-sm font-medium text-gray-600 mb-1">
+                    Charge (q) to Add (e.g., 5, -3)
+                </label>
+                <input type="number" id="chargeMagnitude" value="5" min="-10" max="10" step="1"
+                    class="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 shadow-sm"
+                    oninput="document.getElementById('chargeDisplay').textContent = this.value > 0 ? '+' + this.value : this.value;"
+                >
+                <p class="text-xs mt-1 text-gray-500">Current Charge: <span id="chargeDisplay" class="font-bold text-lg text-red-500">+5</span> (Click canvas to place)</p>
+            </div>
+
+            <!-- Display Toggles -->
+            <div class="space-y-3 pt-2">
+                <h3 class="text-base font-medium text-gray-700">Visualization Toggles</h3>
+                <label class="flex items-center space-x-2 cursor-pointer">
+                    <input type="checkbox" id="toggleEField" checked
+                        class="form-checkbox h-5 w-5 text-blue-600 rounded border-gray-300 focus:ring-blue-500">
+                    <span class="text-gray-700 text-sm">Show Electric Field (E) Vectors</span>
+                </label>
+                <label class="flex items-center space-x-2 cursor-pointer">
+                    <input type="checkbox" id="toggleForces" checked
+                        class="form-checkbox h-5 w-5 text-green-600 rounded border-gray-300 focus:ring-green-500">
+                    <span class="text-gray-700 text-sm">Show Inter-Charge Forces (F)</span>
+                </label>
+                <label class="flex items-center space-x-2 cursor-pointer">
+                    <input type="checkbox" id="toggleNetForce" checked
+                        class="form-checkbox h-5 w-5 text-yellow-600 rounded border-gray-300 focus:ring-yellow-500">
+                    <span class="text-gray-700 text-sm">Show Net Force on Each Charge</span>
+                </label>
+            </div>
+
+            <!-- Action Buttons -->
+            <div class="flex flex-col space-y-2 pt-4 border-t mt-4">
+                <button onclick="clearCharges()"
+                    class="px-4 py-2 bg-red-500 text-white font-semibold rounded-lg shadow-md hover:bg-red-600 transition duration-150">
+                    Clear All Charges
+                </button>
+            </div>
+
+            <div class="pt-4 text-xs text-gray-500 border-t">
+                <p>The system uses a scaled Coulomb's Law for visual representation. Force and Field vector lengths are proportional to their magnitude.</p>
+            </div>
+        </div>
+
+        <!-- Simulation Canvas -->
+        <div class="lg:w-3/4 flex flex-col items-center justify-center bg-gray-50 rounded-lg shadow-inner p-1">
+            <canvas id="physicsCanvas" class="w-full h-96"></canvas>
+            <p class="text-sm text-gray-600 mt-2">Click anywhere on the canvas to place a charge.</p>
+        </div>
+    </div>
+
+    <script>
+        // --- Global Variables and Constants ---
+        const canvas = document.getElementById('physicsCanvas');
+        const ctx = canvas.getContext('2d');
+        let charges = [];
+        let animationFrameId;
+
+        // Scaled Coulomb's constant (k) for visualization in pixel space
+        // Increased from 10000 to 20000 for better interaction strength
+        const K_E = 20000;
+        const CHARGE_RADIUS = 10;
+        const FIELD_RESOLUTION = 30; // Spacing for E-field grid in pixels
+        
+        // Increased F_SCALE significantly (from 0.05 to 2.0) to make force arrows visible
+        const F_SCALE = 2.0; 
+        
+        // Initial setup for responsiveness and charge display
+        function resizeCanvas() {
+            // Set canvas size dynamically based on its parent container
+            canvas.width = canvas.offsetWidth;
+            canvas.height = canvas.offsetHeight;
+        }
+
+        window.addEventListener('resize', resizeCanvas);
+        window.onload = function() {
+            resizeCanvas();
+            document.getElementById('chargeDisplay').textContent = document.getElementById('chargeMagnitude').value > 0 ? '+' + document.getElementById('chargeMagnitude').value : document.getElementById('chargeMagnitude').value;
+            animate();
+        };
+
+        // --- Charge Management ---
+
+        class Charge {
+            constructor(x, y, q) {
+                this.x = x;
+                this.y = y;
+                this.q = q; // Magnitude of the charge
+            }
+        }
+
+        function addCharge(event) {
+            const rect = canvas.getBoundingClientRect();
+            const x = event.clientX - rect.left;
+            const y = event.clientY - rect.top;
+            const q = parseFloat(document.getElementById('chargeMagnitude').value);
+
+            if (isNaN(q) || q === 0) {
+                console.error("Invalid charge magnitude.");
+                return;
+            }
+
+            // Simple check to prevent placing charges too close to each other
+            for (const charge of charges) {
+                const dx = x - charge.x;
+                const dy = y - charge.y;
+                if (Math.sqrt(dx * dx + dy * dy) < CHARGE_RADIUS * 3) {
+                    // console.log("Too close to another charge."); // Removed console log for cleaner experience
+                    return;
+                }
+            }
+
+            charges.push(new Charge(x, y, q));
+        }
+
+        canvas.addEventListener('click', addCharge);
+
+        function clearCharges() {
+            charges = [];
+        }
+
+        // --- Physics Calculations ---
+
+        /**
+         * Calculates the electric field vector (Ex, Ey) at a given point (px, py)
+         * due to all charges.
+         * @param {number} px - The x-coordinate of the point.
+         * @param {number} py - The y-coordinate of the point.
+         * @returns {{ Ex: number, Ey: number }} The total electric field vector.
+         */
+        function calculateEField(px, py) {
+            let Ex = 0;
+            let Ey = 0;
+
+            for (const charge of charges) {
+                const dx = px - charge.x;
+                const dy = py - charge.y;
+                const r2 = dx * dx + dy * dy;
+                const r = Math.sqrt(r2);
+
+                if (r < CHARGE_RADIUS * 1.5) { // Avoid division by zero near charges
+                    continue;
+                }
+
+                // Coulomb's Law: E = k * q / r^2
+                // Vector form: E = k * q / r^3 * r_vector (where r_vector = (dx, dy))
+                const magnitude = K_E * charge.q / (r2 * r);
+                Ex += magnitude * dx;
+                Ey += magnitude * dy;
+            }
+
+            return { Ex, Ey };
+        }
+        
+        /**
+         * Calculates the electric force vector (Fx, Fy) of charge q_i acting ON charge q_j.
+         * F points from q_i towards q_j if attractive (opposite signs), or away if repulsive (same signs).
+         * @param {Charge} q_i - The source charge.
+         * @param {Charge} q_j - The target charge (where the force is exerted).
+         * @returns {{ Fx: number, Fy: number }} The force vector F_ij.
+         */
+        function calculatePairForce(q_i, q_j) {
+            const dx = q_j.x - q_i.x;
+            const dy = q_j.y - q_i.y;
+            const r2 = dx * dx + dy * dy;
+            const r = Math.sqrt(r2);
+
+            // Using a minimum distance (clamping) to prevent infinite forces when charges overlap
+            const minR = CHARGE_RADIUS * 2; 
+
+            if (r < minR) {
+                const r_clamped = minR;
+                const magnitude = K_E * q_i.q * q_j.q / (r_clamped * r_clamped);
+                // Use r (actual distance) to determine direction when clamped
+                return { Fx: magnitude * (dx / r), Fy: magnitude * (dy / r) }; 
+            }
+
+            // Coulomb's Law: F = k * q1 * q2 / r^2
+            // Vector form: F = k * q1 * q2 / r^3 * r_vector
+            const magnitude = K_E * q_i.q * q_j.q / (r2 * r);
+            const Fx = magnitude * dx;
+            const Fy = magnitude * dy;
+
+            return { Fx, Fy };
+        }
+
+
+        /**
+         * Calculates the total electric force vector (Fx, Fy) on charge q_j.
+         * This uses the superposition principle by summing all pairwise forces.
+         * @param {Charge} q_j - The charge experiencing the force.
+         * @param {number} indexJ - The index of the charge in the array.
+         * @returns {{ Fx: number, Fy: number }} The total force vector.
+         */
+        function calculateNetForce(q_j, indexJ) {
+            let Fx_net = 0;
+            let Fy_net = 0;
+
+            for (let i = 0; i < charges.length; i++) {
+                if (i === indexJ) continue; // Skip self-interaction
+
+                const q_i = charges[i];
+                // F_ij is the force of charge i acting on charge j
+                const { Fx, Fy } = calculatePairForce(q_i, q_j);
+                Fx_net += Fx;
+                Fy_net += Fy;
+            }
+
+            return { Fx: Fx_net, Fy: Fy_net };
+        }
+
+        // --- Drawing Functions ---
+
+        /**
+         * Draws an arrow representing a vector.
+         * @param {number} x - Start X position.
+         * @param {number} y - Start Y position.
+         * @param {number} vx - Vector X component.
+         * @param {number} vy - Vector Y component.
+         * @param {string} color - CSS color string.
+         * @param {number} [scale=1] - Scaling factor for vector length.
+         */
+        function drawVector(x, y, vx, vy, color, scale = 1) {
+            const endX = x + vx * scale;
+            const endY = y + vy * scale;
+
+            ctx.strokeStyle = color;
+            ctx.fillStyle = color;
+            ctx.lineWidth = 1.5;
+
+            // Draw line
+            ctx.beginPath();
+            ctx.moveTo(x, y);
+            ctx.lineTo(endX, endY);
+            ctx.stroke();
+
+            // Draw arrowhead (simplified)
+            const angle = Math.atan2(vy, vx);
+            const arrowSize = 5;
+
+            ctx.beginPath();
+            ctx.moveTo(endX, endY);
+            ctx.lineTo(endX - arrowSize * Math.cos(angle - Math.PI / 6), endY - arrowSize * Math.sin(angle - Math.PI / 6));
+            ctx.lineTo(endX - arrowSize * Math.cos(angle + Math.PI / 6), endY - arrowSize * Math.sin(angle + Math.PI / 6));
+            ctx.closePath();
+            ctx.fill();
+        }
+
+        function drawEField() {
+            if (!document.getElementById('toggleEField').checked) return;
+
+            // Draw E-field vectors on a grid
+            const width = canvas.width;
+            const height = canvas.height;
+            const step = FIELD_RESOLUTION;
+
+            const E_SCALE = 10; // Visual scaling factor for E-field vectors
+
+            for (let x = step; x < width - step; x += step) {
+                for (let y = step; y < height - step; y += step) {
+                    const { Ex, Ey } = calculateEField(x, y);
+                    const magnitude = Math.sqrt(Ex * Ex + Ey * Ey);
+
+                    if (magnitude > 0.001) {
+                        // Normalize vector and apply visual scale, but cap magnitude for display
+                        const cappedScale = Math.min(magnitude, 10) / magnitude * E_SCALE;
+                        drawVector(x, y, Ex, Ey, '#8b5cf6', cappedScale); // Purple for E-field
+                    }
+                }
+            }
+        }
+
+        function drawInterChargeForces() {
+            if (!document.getElementById('toggleForces').checked) return;
+
+            // Use the globally defined F_SCALE
+            const scale = F_SCALE; 
+
+            for (let i = 0; i < charges.length; i++) {
+                for (let j = i + 1; j < charges.length; j++) {
+                    const q_i = charges[i];
+                    const q_j = charges[j];
+
+                    // 1. Calculate Force F_ij (Force on j due to i)
+                    const { Fx: F_ij_x, Fy: F_ij_y } = calculatePairForce(q_i, q_j);
+                    
+                    // 2. Calculate Force F_ji (Force on i due to j)
+                    // F_ji = -F_ij (Newton's 3rd Law)
+                    const F_ji_x = -F_ij_x;
+                    const F_ji_y = -F_ij_y;
+
+                    // Draw F_ij (Starts at q_j)
+                    drawVector(q_j.x, q_j.y, F_ij_x, F_ij_y, '#10b981', scale); // Green (Inter-Charge Force)
+                    
+                    // Draw F_ji (Starts at q_i)
+                    drawVector(q_i.x, q_i.y, F_ji_x, F_ji_y, '#10b981', scale); // Green (Inter-Charge Force)
+                }
+            }
+        }
+
+        function drawNetForces() {
+            if (!document.getElementById('toggleNetForce').checked) return;
+
+            // Use the globally defined F_SCALE
+            const scale = F_SCALE; 
+
+            charges.forEach((charge, index) => {
+                const { Fx, Fy } = calculateNetForce(charge, index);
+                const magnitude = Math.sqrt(Fx * Fx + Fy * Fy);
+
+                if (magnitude > 0.001) {
+                    drawVector(charge.x, charge.y, Fx, Fy, '#f59e0b', scale); // Yellow/Orange for Net Force
+                }
+            });
+        }
+
+        function drawCharges() {
+            charges.forEach(charge => {
+                ctx.beginPath();
+                ctx.arc(charge.x, charge.y, CHARGE_RADIUS, 0, Math.PI * 2);
+
+                const isPositive = charge.q > 0;
+                const color = isPositive ? '#ef4444' : '#3b82f6'; // Red (+) or Blue (-)
+                const shadowColor = isPositive ? 'rgba(239, 68, 68, 0.5)' : 'rgba(59, 130, 246, 0.5)';
+
+                // Draw solid circle
+                ctx.fillStyle = color;
+                ctx.shadowColor = shadowColor;
+                ctx.shadowBlur = 15;
+                ctx.fill();
+                ctx.shadowBlur = 0; // Turn off shadow for text
+
+                // Draw charge magnitude label
+                ctx.fillStyle = 'white';
+                ctx.font = '10px Inter, sans-serif';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                const label = (charge.q > 0 ? '+' : '') + charge.q;
+                ctx.fillText(label, charge.x, charge.y);
+
+                // Draw charge magnitude text outside circle
+                ctx.fillStyle = '#374151';
+                ctx.font = '8px Inter, sans-serif';
+                ctx.fillText('q=' + label, charge.x, charge.y + CHARGE_RADIUS + 8);
+            });
+        }
+
+        // --- Main Animation Loop ---
+
+        function animate() {
+            // Clear the canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // 1. Draw Electric Field Vectors
+            drawEField();
+
+            // 2. Draw Inter-Charge Forces (F)
+            drawInterChargeForces();
+
+            // 3. Draw Net Force Vectors
+            drawNetForces();
+
+            // 4. Draw Charges last so they are on top
+            drawCharges();
+
+            // Request next frame
+            animationFrameId = requestAnimationFrame(animate);
+        }
+
+        // Start the animation loop when the window loads (handled by window.onload above)
+
+    </script>
+</body>
+</html>
